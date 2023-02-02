@@ -1,87 +1,54 @@
 import java.io.*;
 import java.net.Socket;
-import java.nio.file.*;
-import java.time.LocalDateTime;
-import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Connection implements Runnable {
+    private final ConcurrentHashMap<String, ConcurrentHashMap<String, Handler>> handlers;
     private final Socket socket;
-    private static final List<String> VALID_PATHS = List.of("/index.html", "/spring.svg", "/spring.png", "/resources.html", "/styles.css", "/app.js", "/links.html", "/forms.html", "/classic.html", "/events.html", "/events.js");
 
-    public Connection(Socket socket) {
+    public Connection(ConcurrentHashMap<String, ConcurrentHashMap<String, Handler>> handlers, Socket socket) {
+        this.handlers = handlers;
         this.socket = socket;
     }
 
     @Override
     public void run() {
-        while (true) {
-            try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-                 BufferedOutputStream out = new BufferedOutputStream(socket.getOutputStream())) {
-                String requestLine = in.readLine();
-                String[] parts = requestLine.split(" ");
-
-                if (parts.length != 3) {
-                    break;
-                }
-
-                String path = parts[1];
-
-                if (!VALID_PATHS.contains(path)) {
-                    out.write((
-                            "HTTP/1.1 404 Not Found\r\n" +
-                                    "Content-Length: 0\r\n" +
-                                    "Connection: close\r\n" +
-                                    "\r\n"
-                    ).getBytes());
-                    out.flush();
-                    break;
-                }
-
-                Path filePath = Path.of(".", "public", path);
-                String mimeType = Files.probeContentType(filePath);
-                long length = Files.size(filePath);
-
-                if (path.equals("/classic.html")) {
-                    writeClassicHtml(filePath, mimeType);
-                } else {
-                    write(filePath, mimeType, length);
-                }
-                break;
-            } catch (IOException e) {
-                e.printStackTrace();
+        try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+             BufferedOutputStream out = new BufferedOutputStream(socket.getOutputStream())) {
+            String requestLine = in.readLine();
+            String[] parts = requestLine.split(" ");
+            if (parts.length != 3) {
+                return;
             }
-        }
-    }
+            Request request = new Request(parts);
+            System.out.println("Значение = ");
+            request.getQueryParam("value").forEach(System.out::println);
+            ConcurrentHashMap<String, Handler> map = handlers.get(request.getMethod());
+            if (map == null) {
+                sendBadRequest(out);
+                return;
+            }
 
-    public void writeClassicHtml(Path filePath, String mimeType) {
-        try (BufferedOutputStream out = new BufferedOutputStream(socket.getOutputStream())) {
-            String template = Files.readString(filePath);
-            byte[] content = template.replace("{time}", LocalDateTime.now().toString()).getBytes();
+            Handler handler = map.get(request.getPath());
+            if (handler == null) {
+                sendBadRequest(out);
+                return;
+            }
 
-            out.write((
-                    "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: " + mimeType + "\r\n" +
-                            "Content-Length: " + content.length + "\r\n" +
-                            "Connection: close\r\n" +
-                            "\r\n"
-            ).getBytes());
-            out.write(content);
-            out.flush();
+            handler.handle(request, out);
         } catch (IOException e) {
             e.printStackTrace();
         }
     }
 
-    public void write(Path filePath, String mimeType, long length) {
-        try (BufferedOutputStream out = new BufferedOutputStream(socket.getOutputStream())) {
+    public void sendBadRequest(BufferedOutputStream out) {
+        try {
             out.write((
-                    "HTTP/1.1 200 OK\r\n" +
-                            "Content-Type: " + mimeType + "\r\n" +
-                            "Content-Length: " + length + "\r\n" +
+                    "HTTP/1.1 404 Not Found\r\n" +
+                            "Content-Length: 0\r\n" +
                             "Connection: close\r\n" +
                             "\r\n"
             ).getBytes());
-            Files.copy(filePath, out);
             out.flush();
         } catch (IOException e) {
             e.printStackTrace();
